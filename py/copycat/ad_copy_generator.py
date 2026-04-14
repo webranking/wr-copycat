@@ -87,6 +87,37 @@ class ModelName(enum.Enum):
   GEMINI_2_0_FLASH_LITE = "gemini-2.0-flash-lite"
   GEMINI_2_5_PRO = "gemini-2.5-pro"
   GEMINI_2_5_FLASH = "gemini-2.5-flash"
+  GEMINI_3_FLASH_PREVIEW = "gemini-3-flash-preview"
+  GEMINI_3_1_FLASH_LITE_PREVIEW = "gemini-3.1-flash-lite-preview"
+
+
+# Models that are only available via the global Vertex AI endpoint.
+# These models cannot be used with regional endpoints like us-central1.
+GLOBAL_ONLY_MODEL_NAMES = {
+    ModelName.GEMINI_3_FLASH_PREVIEW,
+    ModelName.GEMINI_3_1_FLASH_LITE_PREVIEW,
+}
+
+
+def get_vertexai_location(
+    model_name: 'ModelName | str',
+    default_location: str = "us-central1",
+) -> str:
+  """Returns the correct Vertex AI location for the given model.
+
+  Models in GLOBAL_ONLY_MODEL_NAMES require location='global'.
+  All other models use the provided default_location.
+
+  Args:
+    model_name: The model name (enum or string value).
+    default_location: The default location for non-global models.
+
+  Returns:
+    The location string ('global' or the default).
+  """
+  if isinstance(model_name, str):
+    model_name = ModelName(model_name)
+  return "global" if model_name in GLOBAL_ONLY_MODEL_NAMES else default_location
 
 
 class EmbeddingModelName(enum.Enum):
