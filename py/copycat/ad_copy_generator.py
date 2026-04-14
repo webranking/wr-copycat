@@ -1081,6 +1081,10 @@ def generate_google_ad_json_batch(
   system instruction and including a response schema in the generation config
   for models that accept it.
 
+  For models that require the global Vertex AI endpoint (e.g. Gemini 3.x
+  preview), this function temporarily switches the vertexai location to
+  'global' and restores it after generation.
+
   Args:
     requests: A list of text generation requests, containing the prompts, system
       instructions, style guides, and other parameters.
@@ -1092,27 +1096,51 @@ def generate_google_ad_json_batch(
     RuntimeError: If one of the responses is not a valid json representation of
     a GoogleAd. This shouldn't happen unless the gemini api changes.
   """
-  try:
-    loop = asyncio.get_running_loop()
-  except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+  import vertexai
+  from google.cloud import aiplatform
 
-  outputs = loop.run_until_complete(
-      asyncio.gather(*list(map(async_generate_google_ad_json, requests)))
+  # Check if the model requires the global endpoint
+  needs_global = any(
+      r.chat_model_name in GLOBAL_ONLY_MODEL_NAMES for r in requests
   )
-  for output in outputs:
-    if not isinstance(output, generative_models.GenerationResponse):
-      LOGGER.error(
-          "One of the responses is not a GenerationResponse. Instead got: %s",
-          output,
-      )
-      raise RuntimeError(
-          "One of the responses is not a GenerationResponse. Instead got:"
-          f" {output}"
-      )
 
-  return outputs
+  orig_project = None
+  orig_location = None
+  if needs_global:
+    orig_project = aiplatform.initializer.global_config.project
+    orig_location = aiplatform.initializer.global_config.location
+    LOGGER.info(
+        "Switching vertexai to global endpoint for model %s",
+        requests[0].chat_model_name.value,
+    )
+    vertexai.init(project=orig_project, location="global")
+
+  try:
+    try:
+      loop = asyncio.get_running_loop()
+    except RuntimeError:
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+
+    outputs = loop.run_until_complete(
+        asyncio.gather(*list(map(async_generate_google_ad_json, requests)))
+    )
+    for output in outputs:
+      if not isinstance(output, generative_models.GenerationResponse):
+        LOGGER.error(
+            "One of the responses is not a GenerationResponse. Instead got: %s",
+            output,
+        )
+        raise RuntimeError(
+            "One of the responses is not a GenerationResponse. Instead got:"
+            f" {output}"
+        )
+
+    return outputs
+  finally:
+    if needs_global and orig_location is not None:
+      LOGGER.info("Restoring vertexai to location=%s", orig_location)
+      vertexai.init(project=orig_project, location=orig_location)
 
 
 def extract_urls_for_keyword_instructions(
