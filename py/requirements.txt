@@ -14,7 +14,7 @@
 
 numpy
 pandas>=2.1.0
-google-cloud-aiplatform
+google-cloud-aiplatform>=1.79.0,<2
 scikit-learn
 pydantic>=2.0.0
 tenacity

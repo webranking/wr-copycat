@@ -184,12 +184,15 @@ class StyleGuideGenerator:
         },
         ad_copy_vectorstore=ad_copy_vectorstore,
     )
-    model = generative_models.GenerativeModel(
-        model_name=model_name.value, safety_settings=safety_settings
-    )
-    response = model.generate_content(
-        contents=[content], generation_config=generation_config
-    )
+    with ad_copy_generator.temporarily_use_vertexai_global_endpoint(
+        [model_name]
+    ):
+      model = generative_models.GenerativeModel(
+          model_name=model_name.value, safety_settings=safety_settings
+      )
+      response = model.generate_content(
+          contents=[content], generation_config=generation_config
+      )
     if not isinstance(response, generative_models.GenerationResponse):
       LOGGER.error(
           "Response is not a GenerationResponse. Instead got: %s", response

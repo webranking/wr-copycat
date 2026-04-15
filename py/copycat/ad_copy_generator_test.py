@@ -1310,6 +1310,114 @@ class AdCopyGeneratorTest(parameterized.TestCase):
 
     self.assertLen(response, 2)
 
+  @testing_utils.PatchGenerativeModel(response="Response text")
+  def test_generate_google_ad_switches_to_global_endpoint_for_global_only_models(
+      self, generative_model_patcher
+  ):
+    request = ad_copy_generator.TextGenerationRequest(
+        keywords="keyword 1, keyword 2",
+        prompt=[
+            generative_models.Content(
+                role="user",
+                parts=[generative_models.Part.from_text("Example prompt")],
+            )
+        ],
+        system_instruction="Example system instruction",
+        chat_model_name=ad_copy_generator.ModelName.GEMINI_3_FLASH_PREVIEW,
+        temperature=0.9,
+        top_k=40,
+        top_p=0.95,
+        safety_settings=None,
+        existing_ad_copy=google_ads.GoogleAd(headlines=[], descriptions=[]),
+    )
+    mock_global_config = mock.Mock(
+        project="test-project", location="us-central1"
+    )
+
+    with mock.patch("vertexai.init") as vertexai_init:
+      with mock.patch(
+          "google.cloud.aiplatform.initializer.global_config",
+          new=mock_global_config,
+      ):
+        ad_copy_generator.generate_google_ad_json_batch([request])
+
+    self.assertEqual(
+        vertexai_init.call_args_list,
+        [
+            mock.call(project="test-project", location="global"),
+            mock.call(project="test-project", location="us-central1"),
+        ],
+    )
+
+  @testing_utils.PatchGenerativeModel(response="Response text")
+  def test_generate_google_ad_does_not_switch_endpoint_for_regional_models(
+      self, generative_model_patcher
+  ):
+    request = ad_copy_generator.TextGenerationRequest(
+        keywords="keyword 1, keyword 2",
+        prompt=[
+            generative_models.Content(
+                role="user",
+                parts=[generative_models.Part.from_text("Example prompt")],
+            )
+        ],
+        system_instruction="Example system instruction",
+        chat_model_name=ad_copy_generator.ModelName.GEMINI_1_5_FLASH,
+        temperature=0.9,
+        top_k=40,
+        top_p=0.95,
+        safety_settings=None,
+        existing_ad_copy=google_ads.GoogleAd(headlines=[], descriptions=[]),
+    )
+
+    with mock.patch("vertexai.init") as vertexai_init:
+      ad_copy_generator.generate_google_ad_json_batch([request])
+
+    vertexai_init.assert_not_called()
+
+  @testing_utils.PatchGenerativeModel(response="Response text")
+  def test_generate_google_ad_restores_region_after_global_model_failure(
+      self, generative_model_patcher
+  ):
+    request = ad_copy_generator.TextGenerationRequest(
+        keywords="keyword 1, keyword 2",
+        prompt=[
+            generative_models.Content(
+                role="user",
+                parts=[generative_models.Part.from_text("Example prompt")],
+            )
+        ],
+        system_instruction="Example system instruction",
+        chat_model_name=ad_copy_generator.ModelName.GEMINI_3_FLASH_PREVIEW,
+        temperature=0.9,
+        top_k=40,
+        top_p=0.95,
+        safety_settings=None,
+        existing_ad_copy=google_ads.GoogleAd(headlines=[], descriptions=[]),
+    )
+    generative_model_patcher.mock_generative_model.generate_content_async.side_effect = (
+        RuntimeError("boom")
+    )
+    mock_global_config = mock.Mock(
+        project="test-project", location="us-central1"
+    )
+
+    with mock.patch("vertexai.init") as vertexai_init:
+      with mock.patch(
+          "google.cloud.aiplatform.initializer.global_config",
+          new=mock_global_config,
+      ):
+        with self.assertRaisesWithLiteralMatch(RuntimeError, "boom"):
+          ad_copy_generator.generate_google_ad_json_batch([request])
+
+    self.assertEqual(
+        vertexai_init.call_args_list,
+        [
+            mock.call(project="test-project", location="global"),
+            mock.call(project="test-project", location="us-central1"),
+        ],
+    )
+
   def test_extract_url_with_http(self):
     text = "Check out this website: http://www.example.com for more info."
     expected_url = "http://www.example.com"

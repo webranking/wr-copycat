@@ -14,6 +14,7 @@
 
 import asyncio
 from collections.abc import Sequence
+import contextlib
 import dataclasses
 import enum
 import functools
@@ -118,6 +119,83 @@ def get_vertexai_location(
   if isinstance(model_name, str):
     model_name = ModelName(model_name)
   return "global" if model_name in GLOBAL_ONLY_MODEL_NAMES else default_location
+
+
+def _restore_vertexai_location(
+    *,
+    global_config: Any,
+    project: str | None,
+    location: str | None,
+) -> None:
+  """Restores the caller Vertex AI configuration after a global-only request.
+
+  Production code always initializes Vertex AI with a concrete regional
+  location before generating content. The direct attribute fallback is only
+  here to keep tests deterministic when no initial location was configured
+  before entering the temporary global-endpoint context.
+  """
+  import vertexai
+
+  if location is None:
+    global_config.project = project
+    global_config.location = location
+    return
+
+  vertexai.init(project=project, location=location)
+
+
+@contextlib.contextmanager
+def temporarily_use_vertexai_global_endpoint(
+    model_names: Sequence['ModelName | str'],
+):
+  """Temporarily routes global-only Gemini calls through Vertex AI global.
+
+  Gemini 3 preview models are exposed only on Vertex AI's global endpoint.
+  Embeddings and older chat models still need the caller's configured regional
+  endpoint, so the switch is scoped as tightly as possible and restored in a
+  finally block.
+  """
+  normalized_model_names = tuple(
+      ModelName(model_name) for model_name in model_names
+  )
+  global_only_model = next(
+      (
+          model_name
+          for model_name in normalized_model_names
+          if model_name in GLOBAL_ONLY_MODEL_NAMES
+      ),
+      None,
+  )
+  if global_only_model is None:
+    yield
+    return
+
+  import vertexai
+  from google.cloud import aiplatform
+
+  global_config = aiplatform.initializer.global_config
+  original_project = global_config.project
+  original_location = global_config.location
+
+  LOGGER.info(
+      "Switching vertexai to global endpoint for model %s",
+      global_only_model.value,
+  )
+  vertexai.init(project=original_project, location="global")
+
+  try:
+    yield
+  finally:
+    LOGGER.info(
+        "Restoring vertexai to project=%s, location=%s",
+        original_project,
+        original_location,
+    )
+    _restore_vertexai_location(
+        global_config=global_config,
+        project=original_project,
+        location=original_location,
+    )
 
 
 class EmbeddingModelName(enum.Enum):
@@ -1096,26 +1174,9 @@ def generate_google_ad_json_batch(
     RuntimeError: If one of the responses is not a valid json representation of
     a GoogleAd. This shouldn't happen unless the gemini api changes.
   """
-  import vertexai
-  from google.cloud import aiplatform
-
-  # Check if the model requires the global endpoint
-  needs_global = any(
-      r.chat_model_name in GLOBAL_ONLY_MODEL_NAMES for r in requests
-  )
-
-  orig_project = None
-  orig_location = None
-  if needs_global:
-    orig_project = aiplatform.initializer.global_config.project
-    orig_location = aiplatform.initializer.global_config.location
-    LOGGER.info(
-        "Switching vertexai to global endpoint for model %s",
-        requests[0].chat_model_name.value,
-    )
-    vertexai.init(project=orig_project, location="global")
-
-  try:
+  with temporarily_use_vertexai_global_endpoint(
+      [request.chat_model_name for request in requests]
+  ):
     try:
       loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -1137,10 +1198,6 @@ def generate_google_ad_json_batch(
         )
 
     return outputs
-  finally:
-    if needs_global and orig_location is not None:
-      LOGGER.info("Restoring vertexai to location=%s", orig_location)
-      vertexai.init(project=orig_project, location=orig_location)
 
 
 def extract_urls_for_keyword_instructions(

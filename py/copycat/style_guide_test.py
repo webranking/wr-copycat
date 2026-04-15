@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import textwrap
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -93,6 +93,43 @@ class TestStyleGuideGenerator(parameterized.TestCase):
       )  # Compare with the test response
 
       model_patcher.mock_generative_model.generate_content.assert_called_once()
+
+  def test_generate_style_guide_switches_to_global_endpoint_for_global_only_models(
+      self,
+  ):
+    with testing_utils.PatchGenerativeModel(
+        response=self.test_response
+    ) as model_patcher:
+      mock_global_config = MagicMock(
+          project="test-project",
+          location="us-central1",
+      )
+
+      with patch("vertexai.init") as vertexai_init:
+        with patch(
+            "google.cloud.aiplatform.initializer.global_config",
+            new=mock_global_config,
+        ):
+          generator = style_guide.StyleGuideGenerator()
+          response = generator.generate_style_guide(
+              brand_name="Test Brand",
+              model_name=(
+                  ad_copy_generator.ModelName.GEMINI_3_1_FLASH_LITE_PREVIEW
+              ),
+          )
+
+      self.assertEqual(
+          response.candidates[0].content.text,
+          self.test_response.candidates[0].content.text,
+      )
+      model_patcher.mock_generative_model.generate_content.assert_called_once()
+      self.assertEqual(
+          vertexai_init.call_args_list,
+          [
+              call(project="test-project", location="global"),
+              call(project="test-project", location="us-central1"),
+          ],
+      )
 
   @parameterized.named_parameters([
       dict(
